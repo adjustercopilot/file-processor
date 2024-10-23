@@ -1,4 +1,6 @@
-import streamlit as st
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from PyPDF2 import PdfReader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -9,62 +11,75 @@ import pandas as pd
 import os
 import json
 from dotenv import load_dotenv
+from typing import List
 
+
+# Load environment variables
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=api_key)
 
 if not api_key:
-    st.error("API key not found. Please check your .env file or environment variables.")
+    raise HTTPException(status_code=500, detail="API key not found. Please check your environment variables.")
 
-class PolicyExtractor:
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class ClaimFileProcessor:
     def __init__(self):
+        """Initializes the generative model with Google Generative AI."""
         self.model = genai.GenerativeModel(model_name='gemini-1.5-pro')
 
-    def get_text_from_document(self, uploaded_files):
+    def get_text_from_document(self, uploaded_files: UploadFile):
+        """Extract text content from various file types."""
         text = ""
         for file in uploaded_files:
-            if file.name.lower().endswith((".pdf", ".docx", ".txt", ".pptx", ".csv", ".json")):
+            if file.filename.lower().endswith((".pdf", ".docx", ".txt", ".pptx", ".csv", ".json")):
                 try:
-                    if file.name.lower().endswith(".pdf"):
-                        pdf_reader = PdfReader(file)
+                    if file.filename.lower().endswith(".pdf"):
+                        pdf_reader = PdfReader(file.file)
                         for page in pdf_reader.pages:
                             text += page.extract_text() or ""
-                    elif file.name.lower().endswith(".docx"):
-                        doc_content = Document(file)
+                    elif file.filename.lower().endswith(".docx"):
+                        doc_content = Document(file.file)
                         text += "\n".join([paragraph.text for paragraph in doc_content.paragraphs])
-                    elif file.name.lower().endswith(".txt"):
-                        text += file.read().decode('utf-8', errors='ignore')
-                    elif file.name.lower().endswith(".pptx"):
-                        presentation = Presentation(file)
+                    elif file.filename.lower().endswith(".txt"):
+                        text += file.file.read().decode('utf-8', errors='ignore')
+                    elif file.filename.lower().endswith(".pptx"):
+                        presentation = Presentation(file.file)
                         for slide in presentation.slides:
                             for shape in slide.shapes:
                                 if hasattr(shape, "text"):
                                     text += shape.text + "\n"
-                    elif file.name.lower().endswith('.csv'):
-                        df = pd.read_csv(file)
+                    elif file.filename.lower().endswith('.csv'):
+                        df = pd.read_csv(file.file)
                         text += df.to_csv(index=False)
-                    elif file.name.lower().endswith('.json'):
-                        json_data = json.load(file)
+                    elif file.filename.lower().endswith('.json'):
+                        json_data = json.load(file.file)
                         text  += json.dumps(json_data, indent=4) 
                 except Exception as e:
-                    st.error(f"Error processing {file.name}: {e}")
+                    raise HTTPException(status_code=400, detail=f"Error processing {file.filename}: {e}")
         return text
     
     def get_text_chunks(self, text):
-        """Split text into chunks."""
+        """Splits the extracted text into manageable chunks for processing."""
         if not text:
-            print("No text provided.")
-            return []
+            raise HTTPException(status_code=400, detail="No text provided.")
         try:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
             chunks = text_splitter.split_text(text)
             return chunks
         except Exception as e:
-            print(f"Error splitting text: {e}")
-            return []
+            raise HTTPException(status_code=500, detail=f"Error splitting text: {e}")
 
-    def extract_policy_information(self, chunks):
+    def extract_claim_information(self, chunks):
         """Extract specific insurance policy information from the uploaded document content."""
         prompt = """
         Extract all relevant information from the uploaded property damage document and return it in the following structured JSON format. 
@@ -215,34 +230,20 @@ class PolicyExtractor:
                 extracted_info = {"error": "No candidates found in response."}
 
         except Exception as e:
-            print("Error during extraction:", e)
-            extracted_info = {"error": str(e)}
+            raise HTTPException(status_code=500, detail=f"Error during extraction: {e}")
 
         return extracted_info
 
+claim_processor = ClaimFileProcessor()
 
-    def main(self):
-        """Main function to run the policy extraction application."""
-        st.set_page_config("Insurance Policy JSON Generator")
-        st.header("Generate JSON from Insurance Policy Documents:")
-        uploaded_files = st.file_uploader("Upload Policy Documents", type=["pdf", "docx", "txt", "pptx", "csv", "json"], accept_multiple_files=True)
+@app.post("/claims/process")
+async def process_claim_files(uploaded_files: List[UploadFile] = File(...)):
+    """Endpoint to process uploaded claim files and extract structured policy data."""
+    
+    raw_text = claim_processor.get_text_from_document(uploaded_files)
 
-        if uploaded_files:
-            st.write("Generating JSON...")
-            raw_text = self.get_text_from_document(uploaded_files)
-            chunks = self.get_text_chunks(raw_text)
-            policy_info_dict = self.extract_policy_information(chunks)
-            policy_info_json = json.dumps(policy_info_dict, indent=4)
-            st.write("Generated JSON:")
-            st.code(policy_info_json, language='json')
-            # st.json(policy_info_dict)
-            st.download_button(
-                label="Download JSON",
-                data=policy_info_json,
-                file_name='policy_info.json',
-                mime='application/json'
-            )
+    text_chunks = claim_processor.get_text_chunks(raw_text)
+    
+    claim_data = claim_processor.extract_claim_information(text_chunks)
 
-if __name__ == "__main__":
-    app = PolicyExtractor()
-    app.main()
+    return JSONResponse(content=claim_data)
