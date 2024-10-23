@@ -23,7 +23,7 @@ def test_process_pdf_file(tmp_path):
 
     with open(pdf_file_path, "rb") as f:
         response = client.post(
-            "/claims/process",
+            "/api/template/generate",
             files={"uploaded_files": (pdf_file_path.name, f, "application/pdf")}
         )
 
@@ -32,7 +32,7 @@ def test_process_pdf_file(tmp_path):
 
 
 def test_process_no_files_uploaded():
-    response = client.post("/claims/process", files={})
+    response = client.post("/api/template/generate", files={})
 
     assert response.status_code == 422
 

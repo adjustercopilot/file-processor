@@ -236,7 +236,7 @@ class ClaimFileProcessor:
 
 claim_processor = ClaimFileProcessor()
 
-@app.post("/claims/process")
+@app.post("/api/template/generate")
 async def process_claim_files(uploaded_files: List[UploadFile] = File(...)):
     """Endpoint to process uploaded claim files and extract structured policy data."""
     
